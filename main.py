@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from bagelcode.ml_model.model import (
+from utils import (
     CategoricalDenseModel,
     WeightedSum,
     AutoEncoder,
