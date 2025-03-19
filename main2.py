@@ -14,10 +14,10 @@ from collections import defaultdict
 #############################################
 
 def load_and_preprocess_data(
-    portrait_csv="data/sample_data_player_portrait.csv",
-    behavior_csv="data/sample_data_behavior_sequence.csv",
-    social_csv="data/sample_data_social_network.csv",
-    label_csv="data/sample_data_label.csv",
+    portrait_csv="sample_data_player_portrait.csv",
+    behavior_csv="sample_data_behavior_sequence.csv",
+    social_csv="sample_data_social_network.csv",
+    label_csv="sample_data_label.csv",
     window_length=5
 ):
     """
@@ -36,13 +36,12 @@ def load_and_preprocess_data(
     df_label = pd.read_csv(label_csv)
 
     # --- Social features ---
-    # For example: compute each user's out-degree and in-degree (uid used only for grouping)
+    # Compute each user's out-degree and in-degree (uid used only for grouping)
     df_social['edge_count'] = 1
     social_outgoing = df_social.groupby('src_uid')['edge_count'].sum().reset_index()
     social_outgoing.columns = ['uid', 'social_out_degree']
     df_label = df_label.merge(social_outgoing, on='uid', how='left')
     df_label['social_out_degree'] = df_label['social_out_degree'].fillna(0)
-
     social_incoming = df_social.groupby('dst_uid')['edge_count'].sum().reset_index()
     social_incoming.columns = ['uid', 'social_in_degree']
     df_label = df_label.merge(social_incoming, on='uid', how='left')
@@ -51,12 +50,13 @@ def load_and_preprocess_data(
     df_label['social_in_degree'] = df_label['social_in_degree'].astype(float)
 
     # --- Portrait time-series ---
-    # Assume df_portrait has columns: uid, ds, feature1, feature2, ... up to feature_10 (or more)
+    # Assume df_portrait has columns: uid, ds, feature1, feature2, ... (up to feature_10 or more)
     df_portrait['ds'] = pd.to_datetime(df_portrait['ds'])
     df_portrait = df_portrait.sort_values(['uid', 'ds'])
     def get_last_n_rows(group, n=window_length):
         return group.tail(n)
     df_portrait_lastN = df_portrait.groupby('uid', group_keys=False).apply(get_last_n_rows).reset_index(drop=True)
+    # Assume numeric features are those starting with "feature"
     numeric_cols = [c for c in df_portrait.columns if c.startswith('feature')]
     portrait_dict = defaultdict(list)
     for uid, grp in df_portrait_lastN.groupby('uid'):
@@ -95,10 +95,8 @@ def load_and_preprocess_data(
 
     # --- Merge and build final arrays ---
     final_uids = df_label['uid'].unique().tolist()
-
-    # Create user-level categorical features.
-    # Note: uid itself is not used as a feature.
-    # Here we artificially create two features, e.g., region and segment.
+    # Create user-level categorical features (uid itself is not used).
+    # Here we artificially create features such as "region" and "segment".
     user_static_dict = {}
     for uid in final_uids:
         user_static_dict[uid] = {
@@ -174,10 +172,8 @@ class MyDataset(Dataset):
         self.churn_label_tensor = churn_label_tensor
         self.payment_label_tensor = payment_label_tensor
         self.size = self.portrait_ts_tensor.size(0)
-
     def __len__(self):
         return self.size
-
     def __getitem__(self, idx):
         single_user_input = {}
         for k in self.user_input_dict:
@@ -209,7 +205,6 @@ class CategoricalDenseModel(nn.Module):
             layers.append(nn.LeakyReLU(inplace=True))
             input_dim = h
         self.mlp = nn.Sequential(*layers)
-        
     def forward(self, x):
         embedded = [self.embed_layers[k](x[k]) for k in self.vocab_size_dict.keys()]
         x_cat = torch.cat(embedded, dim=-1)
@@ -282,7 +277,6 @@ class MultiHeadSelfAttention(nn.Module):
         self.v_linear = nn.Linear(d_model, d_model)
         self.fc = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
-        
     def forward(self, x, mask=None):
         batch_size, seq_len, d_model = x.size()
         q = self.q_linear(x)
@@ -327,16 +321,16 @@ class TransformerBlock(nn.Module):
         x = self.norm2(x + self.dropout(ff_out))
         return x
 
-# Transformer Encoder
+# Transformer Encoder with n_heads as a parameter
 class TransformerEncoder(nn.Module):
     def __init__(self, window_length, feature_dim, dense_layers, trans_output_dim,
-                 add_time2vec=True, additional_dropout=False, attention_layer_num=3):
+                 add_time2vec=True, additional_dropout=False, attention_layer_num=3, n_heads=2):
         super().__init__()
         self.add_time2vec = add_time2vec
         if add_time2vec:
             self.time2vec = nn.Linear(1, feature_dim)
         self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(d_model=feature_dim, n_heads=2, ff_hidden_dim=feature_dim*2, dropout=0.1)
+            TransformerBlock(d_model=feature_dim, n_heads=n_heads, ff_hidden_dim=feature_dim*2, dropout=0.1)
             for _ in range(attention_layer_num)
         ])
         layers = []
@@ -435,15 +429,17 @@ class CUTAWAS(nn.Module):
         # B. Portrait modules
         self.portrait_static_model = PortraitStaticModel(window_length, portrait_length, output_dim=16)
         self.portrait_conv_unet = Conv2dUnet(window_length, portrait_length, init_channel_dim=16, depth=2, output_dim=1)
-        self.portrait_transformer_model = TransformerEncoder(window_length, portrait_length, dense_layers=[128,64],
-                                                              trans_output_dim=portrait_ts_out_dim,
-                                                              add_time2vec=True, additional_dropout=False, attention_layer_num=3)
+        self.portrait_transformer_model = TransformerEncoder(
+            window_length, portrait_length, dense_layers=[128,64],
+            trans_output_dim=portrait_ts_out_dim, add_time2vec=True, additional_dropout=False, attention_layer_num=3, n_heads=2
+        )
         self.portrait_weighted_sum = WeightedSum(num_inputs=2)
-        # C. Behavior modules
+        # C. Behavior modules: note that we set n_heads=1 here because behavior_length is 3.
         self.behavior_conv_unet = Conv2dUnet(window_length, behavior_length, init_channel_dim=16, depth=2, output_dim=1)
-        self.behavior_transformer_model = TransformerEncoder(window_length, behavior_length, dense_layers=[128,64],
-                                                              trans_output_dim=behavior_ts_out_dim,
-                                                              add_time2vec=True, additional_dropout=False, attention_layer_num=3)
+        self.behavior_transformer_model = TransformerEncoder(
+            window_length, behavior_length, dense_layers=[128,64],
+            trans_output_dim=behavior_ts_out_dim, add_time2vec=True, additional_dropout=False, attention_layer_num=3, n_heads=1
+        )
         self.behavior_weighted_sum = WeightedSum(num_inputs=2)
         # D. Social embedding: simple MLP on 2 social features
         self.social_embed = nn.Sequential(
@@ -540,17 +536,17 @@ def evaluate(model, dataloader, device):
 #############################################
 
 if __name__ == "__main__":
-    # Load data and preprocess
+    # Load and preprocess data
     (user_input_dict,
      portrait_ts_tensor,
      behavior_ts_tensor,
      social_tensor,
      churn_label_tensor,
      payment_label_tensor) = load_and_preprocess_data(
-                                portrait_csv="data/sample_data_player_portrait.csv",
-                                behavior_csv="data/sample_data_behavior_sequence.csv",
-                                social_csv="data/sample_data_social_network.csv",
-                                label_csv="data/sample_data_label.csv",
+                                portrait_csv="sample_data_player_portrait.csv",
+                                behavior_csv="sample_data_behavior_sequence.csv",
+                                social_csv="sample_data_social_network.csv",
+                                label_csv="sample_data_label.csv",
                                 window_length=5)
     # Build dataset
     dataset = MyDataset(user_input_dict,
@@ -559,17 +555,16 @@ if __name__ == "__main__":
                         social_tensor,
                         churn_label_tensor,
                         payment_label_tensor)
-    # Split dataset into training and validation (80/20)
+    # Split dataset (80/20)
     N = len(dataset)
     train_size = int(0.8 * N)
     val_size = N - train_size
     train_data, val_data = torch.utils.data.random_split(dataset, [train_size, val_size])
     train_loader = DataLoader(train_data, batch_size=16, shuffle=True)
     val_loader = DataLoader(val_data, batch_size=16, shuffle=False)
-
     # Instantiate model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    vocab_size_dict = {'region': 5, 'segment': 10}  # example categorical features
+    vocab_size_dict = {'region': 5, 'segment': 10}
     portrait_length = portrait_ts_tensor.size(2)
     behavior_length = behavior_ts_tensor.size(2)
     model = CUTAWAS(vocab_size_dict=vocab_size_dict,
@@ -577,8 +572,7 @@ if __name__ == "__main__":
                     behavior_length=behavior_length,
                     window_length=5).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
-
-    # Training loop demo
+    # Training loop
     num_epochs = 5
     for epoch in range(num_epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, device)
