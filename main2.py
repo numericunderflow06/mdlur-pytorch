@@ -36,7 +36,6 @@ def load_and_preprocess_data(
     df_label = pd.read_csv(label_csv)
 
     # --- Social features ---
-    # Compute each user's out-degree and in-degree (uid used only for grouping)
     df_social['edge_count'] = 1
     social_outgoing = df_social.groupby('src_uid')['edge_count'].sum().reset_index()
     social_outgoing.columns = ['uid', 'social_out_degree']
@@ -50,13 +49,12 @@ def load_and_preprocess_data(
     df_label['social_in_degree'] = df_label['social_in_degree'].astype(float)
 
     # --- Portrait time-series ---
-    # Assume df_portrait has columns: uid, ds, feature1, feature2, ... (up to feature_10 or more)
     df_portrait['ds'] = pd.to_datetime(df_portrait['ds'])
     df_portrait = df_portrait.sort_values(['uid', 'ds'])
     def get_last_n_rows(group, n=window_length):
         return group.tail(n)
     df_portrait_lastN = df_portrait.groupby('uid', group_keys=False).apply(get_last_n_rows).reset_index(drop=True)
-    # Assume numeric features are those starting with "feature"
+    # Look for numeric columns; adjust prefix if necessary (e.g., "feature_" instead of "feature")
     numeric_cols = [c for c in df_portrait.columns if c.startswith('feature')]
     portrait_dict = defaultdict(list)
     for uid, grp in df_portrait_lastN.groupby('uid'):
@@ -69,7 +67,6 @@ def load_and_preprocess_data(
         portrait_dict[uid] = feats_2d
 
     # --- Behavior time-series ---
-    # Assume df_behavior has columns: uid, ds, seq (where seq is a comma-separated string of integers)
     df_behavior['ds'] = pd.to_datetime(df_behavior['ds'])
     df_behavior = df_behavior.sort_values(['uid', 'ds'])
     def seq_to_features(seq_str):
@@ -95,8 +92,7 @@ def load_and_preprocess_data(
 
     # --- Merge and build final arrays ---
     final_uids = df_label['uid'].unique().tolist()
-    # Create user-level categorical features (uid itself is not used).
-    # Here we artificially create features such as "region" and "segment".
+    # Create user-level categorical features (uid itself is not used)
     user_static_dict = {}
     for uid in final_uids:
         user_static_dict[uid] = {
@@ -138,7 +134,6 @@ def load_and_preprocess_data(
     churn_label_tensor = torch.tensor(churn_list,    dtype=torch.float)
     payment_label_tensor = torch.tensor(payment_list, dtype=torch.float)
 
-    # Process user static features into tensors.
     user_region = [d['region'] for d in user_static_list]
     user_segment = [d['segment'] for d in user_static_list]
     user_region_tensor  = torch.tensor(user_region,  dtype=torch.long)
@@ -189,7 +184,6 @@ class MyDataset(Dataset):
 # 2. MODEL DEFINITIONS
 #############################################
 
-# 1. CategoricalDenseModel
 class CategoricalDenseModel(nn.Module):
     def __init__(self, vocab_size_dict, embed_dim=8, hidden_dims=[128, 64]):
         super().__init__()
@@ -210,7 +204,6 @@ class CategoricalDenseModel(nn.Module):
         x_cat = torch.cat(embedded, dim=-1)
         return self.mlp(x_cat)
 
-# 2. AutoEncoder
 class AutoEncoder(nn.Module):
     def __init__(self, output_dim, input_dim):
         super().__init__()
@@ -221,7 +214,6 @@ class AutoEncoder(nn.Module):
     def forward(self, x):
         return self.encoder(x)
 
-# 3. SkipAutoEncoder
 class SkipAutoEncoder(nn.Module):
     def __init__(self, init_channel_dim, depth, output_dim):
         super().__init__()
@@ -239,7 +231,6 @@ class SkipAutoEncoder(nn.Module):
             x = x + block(x)
         return self.final(x)
 
-# 4. WeightedSum
 class WeightedSum(nn.Module):
     def __init__(self, num_inputs=2):
         super().__init__()
@@ -249,7 +240,6 @@ class WeightedSum(nn.Module):
         out = sum(w * inp for w, inp in zip(weights, inputs))
         return out
 
-# Positional Encoding
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super().__init__()
@@ -264,7 +254,6 @@ class PositionalEncoding(nn.Module):
         seq_len = x.size(1)
         return x + self.pe[:, :seq_len, :]
 
-# Multi-Head Self-Attention
 class MultiHeadSelfAttention(nn.Module):
     def __init__(self, d_model, n_heads, dropout=0.1, use_flash_attention=False):
         super().__init__()
@@ -294,7 +283,6 @@ class MultiHeadSelfAttention(nn.Module):
         out = out.transpose(1,2).contiguous().view(batch_size, seq_len, d_model)
         return self.fc(out)
 
-# FeedForward network
 class FeedForward(nn.Module):
     def __init__(self, d_model, hidden_dim, dropout=0.1):
         super().__init__()
@@ -305,7 +293,6 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.linear2(self.dropout(self.activation(self.linear1(x))))
 
-# Transformer Block
 class TransformerBlock(nn.Module):
     def __init__(self, d_model, n_heads, ff_hidden_dim, dropout=0.1, use_flash_attention=False):
         super().__init__()
@@ -321,7 +308,6 @@ class TransformerBlock(nn.Module):
         x = self.norm2(x + self.dropout(ff_out))
         return x
 
-# Transformer Encoder with n_heads as a parameter
 class TransformerEncoder(nn.Module):
     def __init__(self, window_length, feature_dim, dense_layers, trans_output_dim,
                  add_time2vec=True, additional_dropout=False, attention_layer_num=3, n_heads=2):
@@ -356,7 +342,6 @@ class TransformerEncoder(nn.Module):
         x = x.mean(dim=1)
         return self.mlp(x)
 
-# Conv2d Unet
 class Conv2dUnet(nn.Module):
     def __init__(self, window_length, feature_dim, init_channel_dim=16, depth=2, output_dim=1):
         super().__init__()
@@ -388,12 +373,12 @@ class Conv2dUnet(nn.Module):
         self.global_pool = nn.AdaptiveAvgPool2d((1,1))
     def forward(self, x):
         batch_size = x.size(0)
-        x = x.unsqueeze(1)
+        x = x.unsqueeze(1)  # (batch, 1, window_length, feature_dim)
         downs = []
         for conv in self.down_convs:
             x = conv(x)
             downs.append(x)
-            x = F.max_pool2d(x, kernel_size=2)
+            x = F.max_pool2d(x, kernel_size=2, ceil_mode=True)  # ceil_mode to avoid zero dimension
         for conv in self.up_convs:
             x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
             if downs:
@@ -405,7 +390,6 @@ class Conv2dUnet(nn.Module):
         x = self.global_pool(x)
         return x.view(batch_size, -1)
 
-# Portrait Static Model
 class PortraitStaticModel(nn.Module):
     def __init__(self, window_length, portrait_length, output_dim=16):
         super().__init__()
@@ -414,19 +398,19 @@ class PortraitStaticModel(nn.Module):
         x_last = x[:, -1, :]
         return self.autoencoder(x_last)
 
-# Main multi-task model: adapted from CUTAWAS / MDLUR
+# Main multi-task model (CUTAWAS)
 class CUTAWAS(nn.Module):
     def __init__(self,
-                 vocab_size_dict,    # e.g., {'region': 5, 'segment': 10}
+                 vocab_size_dict,    
                  portrait_length,    # dimension per portrait vector
                  behavior_length,    # dimension per behavior vector
                  window_length=5,
                  portrait_ts_out_dim=64,
                  behavior_ts_out_dim=64):
         super().__init__()
-        # A. User-level model
+        # User branch
         self.user_model = CategoricalDenseModel(vocab_size_dict)
-        # B. Portrait modules
+        # Portrait branch
         self.portrait_static_model = PortraitStaticModel(window_length, portrait_length, output_dim=16)
         self.portrait_conv_unet = Conv2dUnet(window_length, portrait_length, init_channel_dim=16, depth=2, output_dim=1)
         self.portrait_transformer_model = TransformerEncoder(
@@ -434,25 +418,31 @@ class CUTAWAS(nn.Module):
             trans_output_dim=portrait_ts_out_dim, add_time2vec=True, additional_dropout=False, attention_layer_num=3, n_heads=2
         )
         self.portrait_weighted_sum = WeightedSum(num_inputs=2)
-        # C. Behavior modules: note that we set n_heads=1 here because behavior_length is 3.
+        # Behavior branch (n_heads=1 due to behavior_length=3)
         self.behavior_conv_unet = Conv2dUnet(window_length, behavior_length, init_channel_dim=16, depth=2, output_dim=1)
         self.behavior_transformer_model = TransformerEncoder(
             window_length, behavior_length, dense_layers=[128,64],
             trans_output_dim=behavior_ts_out_dim, add_time2vec=True, additional_dropout=False, attention_layer_num=3, n_heads=1
         )
         self.behavior_weighted_sum = WeightedSum(num_inputs=2)
-        # D. Social embedding: simple MLP on 2 social features
+        # Social branch
         self.social_embed = nn.Sequential(
             nn.Linear(2, 16),
             nn.LeakyReLU(inplace=True),
             nn.Linear(16, 16)
         )
-        # E. Final concatenation via SkipAutoEncoder
+        # Final concatenation via SkipAutoEncoder
         total_in_dim = 64 + 16 + portrait_ts_out_dim + behavior_ts_out_dim + 16
         self.skip_autoencoder = SkipAutoEncoder(init_channel_dim=64, depth=2, output_dim=64)
-        # F. Two heads:
-        self.churn_head = nn.Linear(64, 1)    # Binary classification head
-        self.payment_head = nn.Linear(64, 1)  # Regression head
+        # Improved churn head: extra hidden layer and dropout
+        self.churn_head = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.LeakyReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(32, 1)
+        )
+        # Payment head (unchanged)
+        self.payment_head = nn.Linear(64, 1)
     def forward(self, user_input_dict, portrait_input, behavior_input, social_input):
         user_out = self.user_model(user_input_dict)
         portrait_static_out = self.portrait_static_model(portrait_input)
@@ -473,7 +463,7 @@ class CUTAWAS(nn.Module):
 # 3. TRAINING & EVALUATION
 #############################################
 
-def train_one_epoch(model, dataloader, optimizer, device):
+def train_one_epoch(model, dataloader, optimizer, device, churn_only=True):
     model.train()
     total_loss = 0.0
     for batch in dataloader:
@@ -487,15 +477,16 @@ def train_one_epoch(model, dataloader, optimizer, device):
         payment_label = payment_label.to(device).unsqueeze(-1)
         optimizer.zero_grad()
         churn_logit, payment_out = model(user_input_dict, portrait_ts, behavior_ts, social_ts)
+        # loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([<some_weight>]).to(device))
         churn_loss = nn.BCEWithLogitsLoss()(churn_logit, churn_label)
         payment_loss = nn.MSELoss()(payment_out, payment_label)
-        loss = churn_loss + 0.1 * payment_loss
+        loss = churn_loss if churn_only else (churn_loss + 0.1 * payment_loss)
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
     return total_loss / len(dataloader)
 
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, churn_only=True):
     model.eval()
     total_loss = 0.0
     churn_correct = 0
@@ -515,7 +506,7 @@ def evaluate(model, dataloader, device):
             churn_logit, payment_out = model(user_input_dict, portrait_ts, behavior_ts, social_ts)
             churn_loss = nn.BCEWithLogitsLoss()(churn_logit, churn_label)
             payment_loss = nn.MSELoss()(payment_out, payment_label)
-            loss = churn_loss + 0.1 * payment_loss
+            loss = churn_loss if churn_only else (churn_loss + 0.1 * payment_loss)
             total_loss += loss.item()
             pred_churn = torch.sigmoid(churn_logit)
             pred_churn_class = (pred_churn > 0.5).float()
@@ -532,11 +523,10 @@ def evaluate(model, dataloader, device):
     return avg_loss, churn_acc, payment_mse
 
 #############################################
-# MAIN PIPELINE
+# MAIN PIPELINE WITH DIAGNOSTICS
 #############################################
 
 if __name__ == "__main__":
-    # Load and preprocess data
     (user_input_dict,
      portrait_ts_tensor,
      behavior_ts_tensor,
@@ -548,21 +538,21 @@ if __name__ == "__main__":
                                 social_csv="sample_data_social_network.csv",
                                 label_csv="sample_data_label.csv",
                                 window_length=5)
-    # Build dataset
     dataset = MyDataset(user_input_dict,
                         portrait_ts_tensor,
                         behavior_ts_tensor,
                         social_tensor,
                         churn_label_tensor,
                         payment_label_tensor)
-    # Split dataset (80/20)
+    print(f"Total samples in dataset: {len(dataset)}")
+    print(f"Churn positive ratio: {churn_label_tensor.mean().item():.4f}")
+    
     N = len(dataset)
     train_size = int(0.8 * N)
     val_size = N - train_size
     train_data, val_data = torch.utils.data.random_split(dataset, [train_size, val_size])
     train_loader = DataLoader(train_data, batch_size=16, shuffle=True)
     val_loader = DataLoader(val_data, batch_size=16, shuffle=False)
-    # Instantiate model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vocab_size_dict = {'region': 5, 'segment': 10}
     portrait_length = portrait_ts_tensor.size(2)
@@ -571,12 +561,10 @@ if __name__ == "__main__":
                     portrait_length=portrait_length,
                     behavior_length=behavior_length,
                     window_length=5).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    # Training loop
-    num_epochs = 5
+    optimizer = optim.Adam(model.parameters(), lr=1e-5)
+    num_epochs = 500
     for epoch in range(num_epochs):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device)
-        val_loss, val_churn_acc, val_payment_mse = evaluate(model, val_loader, device)
+        train_loss = train_one_epoch(model, train_loader, optimizer, device, churn_only=True)
+        val_loss, val_churn_acc, _ = evaluate(model, val_loader, device, churn_only=True)
         print(f"Epoch {epoch+1}/{num_epochs} | Train Loss: {train_loss:.4f} | "
-              f"Val Loss: {val_loss:.4f} | Churn Acc: {val_churn_acc:.4f} | "
-              f"Payment MSE: {val_payment_mse:.4f}")
+              f"Val Loss: {val_loss:.4f} | Churn Acc: {val_churn_acc:.4f}")
